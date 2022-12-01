@@ -55,7 +55,11 @@ mod tests {
         let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(vec![]);
 
         // Bench proof generation time
-        let proof_message = format!("Bit Sha256 Proof generation with {} rows", degree);
+        println!(
+            "Performing {} sha256 permutations, each on 64 bytes",
+            circuit.capacity()
+        );
+        let proof_message = format!("Bit Sha256 Proof generation with 2^{} rows", degree);
         let start2 = start_timer!(|| proof_message);
         create_proof::<
             KZGCommitmentScheme<Bn256>,

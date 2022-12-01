@@ -54,7 +54,14 @@ mod tests {
         let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(vec![]);
 
         // Bench proof generation time
-        let proof_message = format!("Packed Multi-Keccak Proof generation with {} rows", degree);
+        println!(
+            "Performing {} keccak_f permutations, each on 135 bytes",
+            circuit.capacity()
+        );
+        let proof_message = format!(
+            "Packed Multi-Keccak Proof generation with 2^{} rows",
+            degree
+        );
         let start2 = start_timer!(|| proof_message);
         create_proof::<
             KZGCommitmentScheme<Bn256>,
