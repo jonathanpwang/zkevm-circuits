@@ -228,7 +228,7 @@ impl<F: Field> SubCircuit<F> for EvmCircuit<F> {
 
 #[cfg(any(feature = "test", test))]
 pub mod test {
-    use super::*;
+    use super::{util::DEFAULT_RAND, *};
     use crate::{
         evm_circuit::{table::FixedTableTag, witness::Block, EvmCircuitConfig},
         table::{BlockTable, BytecodeTable, CopyTable, ExpTable, KeccakTable, RwTable, TxTable},
@@ -302,16 +302,19 @@ pub mod test {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let tx_table = TxTable::construct(meta);
             let rw_table = RwTable::construct(meta);
+            let tx_table = TxTable::construct(meta);
             let bytecode_table = BytecodeTable::construct(meta);
             let block_table = BlockTable::construct(meta);
             let q_copy_table = meta.fixed_column();
             let copy_table = CopyTable::construct(meta, q_copy_table);
             let keccak_table = KeccakTable::construct(meta);
             let exp_table = ExpTable::construct(meta);
-
-            let power_of_randomness = power_of_randomness_from_instance(meta);
+            let power_of_randomness: [Expression<F>; 31] = (1..32)
+                .map(|exp| Expression::Constant(F::from_u128(DEFAULT_RAND).pow(&[exp, 0, 0, 0])))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
             EvmCircuitConfig::new(
                 meta,
                 EvmCircuitConfigArgs {

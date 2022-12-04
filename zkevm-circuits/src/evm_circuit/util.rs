@@ -488,3 +488,6 @@ pub(crate) fn split_u256_limb64(value: &U256) -> [U256; 4] {
         U256([value.0[3], 0, 0, 0]),
     ]
 }
+
+/// the magic number is `echo 'zkevm-circuits' | hexdump`
+pub const DEFAULT_RAND: u128 = 0x10000; //0x6b7a76652d6d6963637269757374u128;
