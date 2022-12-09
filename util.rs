@@ -1,12 +1,17 @@
 //! Utility traits, functions used in the crate.
 
-use eth_types::{Field, ToScalar, Word};
 use halo2_proofs::{
     circuit::{Layouter, Value},
     plonk::{Error, TableColumn},
 };
 use itertools::Itertools;
 use std::env::var;
+
+pub mod constraint_builder;
+pub mod eth_types;
+pub mod expression;
+
+use eth_types::{Field, ToScalar, Word};
 
 pub(crate) const NUM_BITS_PER_BYTE: usize = 8;
 pub(crate) const NUM_BYTES_PER_WORD: usize = 8;
@@ -84,11 +89,10 @@ pub struct WordParts {
 
 /// Packs bits into bytes
 pub mod to_bytes {
-    use eth_types::Field;
-    use gadgets::util::Expr;
-    use halo2_proofs::plonk::Expression;
+    use super::expression::Expr;
+    use halo2_proofs::{halo2curves::FieldExt, plonk::Expression};
 
-    pub(crate) fn expr<F: Field>(bits: &[Expression<F>]) -> Vec<Expression<F>> {
+    pub(crate) fn expr<F: FieldExt>(bits: &[Expression<F>]) -> Vec<Expression<F>> {
         debug_assert!(bits.len() % 8 == 0, "bits not a multiple of 8");
         let mut bytes = Vec::new();
         for byte_bits in bits.chunks(8) {
@@ -140,10 +144,12 @@ pub fn rotate_left(bits: &[u8], count: usize) -> [u8; NUM_BITS_PER_WORD] {
 
 /// Encodes the data using rlc
 pub mod compose_rlc {
-    use eth_types::Field;
-    use halo2_proofs::plonk::Expression;
+    use halo2_proofs::{halo2curves::FieldExt, plonk::Expression};
 
-    pub(crate) fn expr<F: Field>(expressions: &[Expression<F>], r: Expression<F>) -> Expression<F> {
+    pub(crate) fn expr<F: FieldExt>(
+        expressions: &[Expression<F>],
+        r: Expression<F>,
+    ) -> Expression<F> {
         let mut rlc = expressions[0].clone();
         let mut multiplier = r.clone();
         for expression in expressions[1..].iter() {
@@ -156,8 +162,7 @@ pub mod compose_rlc {
 
 /// Scatters a value into a packed word constant
 pub mod scatter {
-    use super::pack;
-    use eth_types::Field;
+    use super::{eth_types::Field, pack};
     use halo2_proofs::plonk::Expression;
 
     pub(crate) fn expr<F: Field>(value: u8, count: usize) -> Expression<F> {
