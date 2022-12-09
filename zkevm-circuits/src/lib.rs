@@ -12,25 +12,25 @@
 #![allow(clippy::upper_case_acronyms)]
 // Catch documentation errors caused by code changes.
 #![deny(rustdoc::broken_intra_doc_links)]
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![deny(clippy::debug_assert_with_mut_call)]
 
-pub mod bytecode_circuit;
-pub mod copy_circuit;
-pub mod evm_circuit;
-pub mod exp_circuit;
+// pub mod bytecode_circuit;
+// pub mod copy_circuit;
+// pub mod evm_circuit;
+// pub mod exp_circuit;
 pub mod keccak_circuit;
-pub mod pi_circuit;
-pub mod state_circuit;
-pub mod super_circuit;
-pub mod table;
+// pub mod pi_circuit;
+// pub mod state_circuit;
+// pub mod super_circuit;
+// pub mod table;
 
-#[cfg(any(feature = "test", test))]
-pub mod test_util;
-
-pub mod tx_circuit;
-pub mod util;
-pub mod witness;
-
-pub use gadgets::impl_expr;
+// #[cfg(any(feature = "test", test))]
+// pub mod test_util;
+//
+// pub mod tx_circuit;
+// pub mod util;
+// pub mod witness;
+//
+// pub use gadgets::impl_expr;
