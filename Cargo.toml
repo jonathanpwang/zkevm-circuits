@@ -16,6 +16,10 @@ members = [
 [patch.crates-io]
 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2022_09_10" }
 
+[profile.dev]
+opt-level = 3
+debug-assertions = true
+
 # Definition of benchmarks profile to use.
 [profile.bench]
 opt-level = 3

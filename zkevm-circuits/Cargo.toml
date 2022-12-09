@@ -33,6 +33,7 @@ hex = "0.4.3"
 itertools = "0.10.1"
 pretty_assertions = "1.0.0"
 rand_chacha = "0.3"
+test-log = "0.2.11"
 
 [features]
 default = []
