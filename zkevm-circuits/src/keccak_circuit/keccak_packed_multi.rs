@@ -16,11 +16,12 @@ use halo2_proofs::{
     },
     poly::Rotation,
 };
+use itertools::Itertools;
 use log::{debug, info};
-use std::env::var;
+use std::{cmp, env::var};
 use std::{marker::PhantomData, vec};
 
-const MAX_DEGREE: usize = 3;
+const MAX_DEGREE: usize = 4;
 const ABSORB_LOOKUP_RANGE: usize = 3;
 const THETA_C_LOOKUP_RANGE: usize = 6;
 const RHO_PI_LOOKUP_RANGE: usize = 4;
@@ -67,6 +68,7 @@ pub(crate) struct SqueezeData<F: FieldExt> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct KeccakRow<F: FieldExt> {
     q_enable: bool,
+    // q_enable_row: bool,
     q_round: bool,
     q_absorb: bool,
     q_round_last: bool,
@@ -75,12 +77,12 @@ pub(crate) struct KeccakRow<F: FieldExt> {
     round_cst: F,
     is_final: bool,
     cell_values: Vec<F>,
-    length: usize,
+    // length: usize,
     // data_rlc: F,
     // hash_rlc: F,
-    // bytes_left: F, // from len to 1
+    bytes_left: F, // from len to 1
     // hash_id: F,    // 0 when first row, then 1,2,3,..
-    // value: F,      // byte
+    value: F, // byte
 }
 
 /// Part
@@ -312,10 +314,100 @@ impl<F: FieldExt> CellManager<F> {
     }
 }
 
+/// Keccak Table, records inputs of keccak
+#[derive(Clone, Debug)]
+pub struct KeccakTable {
+    /// True when the row is enabled
+    pub is_enabled: Column<Advice>,
+    // Byte array input length
+    // pub input_len: Column<Advice>,
+    /// Input byte value from some keccak query
+    pub byte_value: Column<Advice>,
+    /// Internal counter
+    pub bytes_left: Column<Advice>,
+}
+
+impl KeccakTable {
+    /// Construct a new KeccakTable
+    pub fn construct<F: Field>(meta: &mut ConstraintSystem<F>) -> Self {
+        Self {
+            is_enabled: meta.advice_column(),
+            // input_len: meta.advice_column(),
+            byte_value: meta.advice_column(),
+            bytes_left: meta.advice_column(),
+        }
+    }
+
+    fn all_columns(&self) -> Vec<Column<Advice>> {
+        vec![
+            self.is_enabled,
+            // self.input_len,
+            self.byte_value,
+            self.bytes_left,
+        ]
+    }
+
+    /// Generate the keccak table assignments from a byte array input.
+    pub fn assignments<F: Field>(input: &[u8]) -> Vec<[Value<F>; 3]> {
+        // let input_len = F::from(input.len() as u64);
+
+        let mut assignments = Vec::with_capacity(input.len() + 1);
+        for (idx, byte) in input.iter().enumerate() {
+            assignments.push([
+                Value::known(F::zero()), // is_final
+                // Value::known(F::zero()), // place holder
+                Value::known(F::from_u128(*byte as u128)),
+                Value::known(F::from_u128((input.len() - idx) as u128)),
+            ]);
+        }
+        let final_row = [
+            Value::known(F::one()),
+            // Value::known(input_len),
+            Value::known(F::zero()), // place holder
+            Value::known(F::zero()), // place holder
+        ];
+        //println!("final row {:?}", final_row);
+        assignments.push(final_row);
+        assignments
+    }
+
+    /// Assign a table row for keccak table
+    pub fn assign_row<F: Field>(
+        &self,
+        region: &mut Region<F>,
+        offset: usize,
+        values: [F; 3],
+    ) -> Vec<AssignedCell<F, F>> {
+        //println!("keccak table assign row {:?}", values);
+        self.all_columns()
+            .iter()
+            .zip(values.iter())
+            .map(|(column, value)| {
+                region
+                    .assign_advice(
+                        || format!("assign {}", offset),
+                        *column,
+                        offset,
+                        || Value::known(*value),
+                    )
+                    .unwrap()
+            })
+            .collect()
+    }
+}
+
 /// KeccakConfig
 #[derive(Clone, Debug)]
 pub struct KeccakPackedConfig<F> {
     // q_enable only on the first row of valid rounds,
+    // while q_enable_row on every row of valid rounds
+    // q_enable_row can be optimized out using expression like
+    // (1..get_num_rows_per_round() as i32).map(|i| meta.query_fixed(q_enable,
+    // Rotation(-i))).fold(0.expr(), |acc, elem| acc + elem), now we keep it here to make codes
+    // easier to read
+
+    // TODO: switch to Selectors (requires using q_enable_row because you can't query negative
+    // rotations on selector)
     q_enable: Column<Fixed>,
     // q_enable_row: Column<Fixed>,
     q_first: Column<Fixed>,
@@ -324,9 +416,8 @@ pub struct KeccakPackedConfig<F> {
     q_round_last: Column<Fixed>,
     q_padding: Column<Fixed>,
     q_padding_last: Column<Fixed>,
-    // removed keccak_table, is_final = keccak_table.is_enabled
-    // TODO: not sure if we still need this
-    is_final: Column<Advice>,
+
+    keccak_table: KeccakTable,
 
     cell_manager: CellManager<F>,
     round_cst: Column<Fixed>,
@@ -341,8 +432,7 @@ pub struct KeccakPackedConfig<F> {
 /// KeccakPackedCircuit
 #[derive(Default)]
 pub struct KeccakPackedCircuit<F: FieldExt> {
-    witness: Vec<KeccakRow<F>>,
-    fetch_cells: Vec<(usize, usize)>,
+    inputs: Vec<Vec<u8>>,
     num_rows: usize,
     _marker: PhantomData<F>,
 }
@@ -366,17 +456,30 @@ impl<F: Field> Circuit<F> for KeccakPackedCircuit<F> {
     ) -> Result<(), Error> {
         config.load(&mut layouter)?;
         let mut assigned = vec![];
+        let mut first_pass = true;
         layouter.assign_region(
             || "keccak circuit",
             |mut region| {
-                assigned = config.assign(&mut region, &self.witness, self.fetch_cells.clone());
+                if first_pass {
+                    first_pass = false;
+                    return Ok(());
+                }
+                assigned =
+                    config.assign_from_witness(&mut region, &self.inputs, Some(self.capacity()));
                 Ok(())
             },
         )?;
-        for acells in assigned.chunks(4) {
+        for assigned in assigned {
             // the reverse order gives the bytes in the order specified by Keccak spec
             // aka U256 in big endian representation
-            let s = acells.iter().rev().map(|word| word.value().copied());
+            println!("Input:");
+            assigned.0.iter().for_each(|byte| {
+                byte.value().map(|v| {
+                    print!("{}, ", v.get_lower_32() as u8);
+                });
+            });
+            println!("Output:");
+            let s = assigned.1.iter().map(|word| word.value().copied());
             s.into_iter().for_each(|word| {
                 word.map(|word| {
                     let repacked = pack_with_base::<F>(&unpack(word), 2)
@@ -398,8 +501,7 @@ impl<F: Field> KeccakPackedCircuit<F> {
     /// Creates a new circuit instance
     pub fn new(num_rows: usize) -> Self {
         KeccakPackedCircuit {
-            witness: Vec::new(),
-            fetch_cells: Vec::new(),
+            inputs: Vec::new(),
             num_rows,
             _marker: PhantomData,
         }
@@ -409,11 +511,6 @@ impl<F: Field> KeccakPackedCircuit<F> {
     pub fn capacity(&self) -> usize {
         // Subtract two for unusable rows
         self.num_rows / ((NUM_ROUNDS + 1) * get_num_rows_per_round()) - 2
-    }
-
-    /// Sets the witness using the data to be hashed
-    pub fn generate_witness(&mut self, inputs: &[Vec<u8>]) {
-        (self.witness, self.fetch_cells) = multi_keccak(inputs, Some(self.capacity()));
     }
 }
 
@@ -812,7 +909,9 @@ impl<F: Field> KeccakPackedConfig<F> {
         let q_padding_last = meta.fixed_column();
         let round_cst = meta.fixed_column();
 
-        let is_final = meta.advice_column();
+        let keccak_table = KeccakTable::construct(meta);
+        let is_final = keccak_table.is_enabled;
+        // let length = keccak_table.input_len;
 
         let normalize_3 = array_init::array_init(|_| meta.lookup_table_column());
         let normalize_4 = array_init::array_init(|_| meta.lookup_table_column());
@@ -1343,7 +1442,6 @@ impl<F: Field> KeccakPackedConfig<F> {
             cb.gate(meta.query_fixed(q_first, Rotation::cur()))
         });
 
-        /*
         // some utility query functions
         let q = |col: Column<Fixed>, meta: &mut VirtualCells<'_, F>| {
             meta.query_fixed(col, Rotation::cur())
@@ -1353,10 +1451,148 @@ impl<F: Field> KeccakPackedConfig<F> {
                 .map(|i| meta.query_fixed(col, Rotation(-i)))
                 .fold(0.expr(), |acc, elem| acc + elem)
         };
-        let q_prev_round = |col: Column<Fixed>, meta: &mut VirtualCells<'_, F>| {
+        let _q_prev_round = |col: Column<Fixed>, meta: &mut VirtualCells<'_, F>| {
             meta.query_fixed(col, Rotation(-(get_num_rows_per_round() as i32)))
         };
+        /*
+        eg：
+            data:
+                get_num_rows_per_round: 18
+                input: "12345678abc"
+            table:
+                Note[1]: be careful: is_paddings is not column here! It is [Cell; 8].
+        offset  value bytes_left  is_paddings q_enable q_padding_last
+        18        1      11          0         1        0 // 1st round begin
+        19        2      10          0         0        0
+        20        3      9           0         0        0
+        21        4      8           0         0        0
+        22        5      7           0         0        0
+        23        6      6           0         0        0
+        24        7      5           0         0        0
+        25        8      4           0         0        0
+        26        8      4           NA        0        0
+        ...
+        35        8      4           NA        0        0  // 1st round end
+        36        a      3           0         1        1  // 2nd round begin
+        37        b      2           0         0        0
+        38        c      1           0         0        0
+        39        0      0           1         0        0
+        40        0      0           1         0        0
+        41        0      0           1         0        0
+        42        0      0           1         0        0
+        43        0      0           1         0        0
+
         */
+
+        /*
+        meta.create_gate("hash_id", |meta| {
+            let mut cb = BaseConstraintBuilder::new(MAX_DEGREE);
+
+            cb.condition(q_in_round(q_first, meta), |cb| {
+                cb.require_zero(
+                    "hash_id needs to be zero on the first row",
+                    meta.query_advice(keccak_table.hash_id, Rotation::cur()),
+                );
+            });
+            cb.condition(
+                (q(q_enable, meta) - q(q_first, meta))
+                    * meta.query_advice(is_final, Rotation::cur()),
+                |cb| {
+                    let hash_id = meta.query_advice(keccak_table.hash_id, Rotation::cur());
+                    let hash_rlc = meta.query_advice(hash_rlc, Rotation::cur());
+                    cb.require_equal("hash_id == hash_output", hash_rlc, hash_id);
+                },
+            );
+            cb.condition(
+                q_in_round(q_enable, meta)
+                    - q_in_round(q_first, meta)
+                    - q(q_enable, meta) * q_prev_round(q_absorb, meta),
+                |cb| {
+                    let counter = meta.query_advice(keccak_table.hash_id, Rotation::cur());
+                    let counter_prev = meta.query_advice(keccak_table.hash_id, Rotation::prev());
+                    cb.require_equal(
+                        "hash_id keeps same when no new hash input",
+                        counter_prev,
+                        counter,
+                    );
+                },
+            );
+            cb.gate(1.expr())
+        });
+        */
+        meta.create_gate("byte_value", |meta| {
+            let mut cb = BaseConstraintBuilder::new(MAX_DEGREE);
+            for idx in 0..get_num_rows_per_round() {
+                cb.condition(
+                    q(q_padding, meta) * not::expr(is_paddings[std::cmp::min(idx, 7)].expr()),
+                    |cb| {
+                        cb.require_equal(
+                            "input byte",
+                            input_bytes[std::cmp::min(idx, 7)].expr.clone(),
+                            meta.query_advice(keccak_table.byte_value, Rotation(idx as i32)),
+                        );
+                    },
+                );
+            }
+            cb.gate(q(q_enable, meta))
+        });
+        meta.create_gate("bytes_left", |meta| {
+            let mut cb = BaseConstraintBuilder::new(MAX_DEGREE);
+            // TODO: is this needed?
+            cb.condition(q_in_round(q_first, meta), |cb| {
+                cb.require_zero(
+                    "bytes_left needs to be zero on the first row",
+                    meta.query_advice(keccak_table.bytes_left, Rotation::cur()),
+                );
+            });
+            // is_paddings only be true when
+            cb.condition(q(q_padding, meta), |cb| {
+                for i in 0..get_num_rows_per_round() {
+                    let bytes_left = meta.query_advice(keccak_table.bytes_left, Rotation(i as i32));
+                    let bytes_left_next =
+                        meta.query_advice(keccak_table.bytes_left, Rotation(i as i32 + 1));
+                    // real input only when !is_paddings[i] && i < 8
+                    cb.require_equal(
+                        "if not padding, bytes_left decreases by 1, else, stay same",
+                        bytes_left_next,
+                        bytes_left.clone()
+                            - if i < 7 || i == get_num_rows_per_round() - 1 {
+                                not::expr(is_paddings[std::cmp::min(i, 7)].expr())
+                            } else {
+                                0.expr()
+                            },
+                    );
+                    cb.require_zero(
+                        "bytes_left should be 0 when padding",
+                        bytes_left * is_paddings[std::cmp::min(i, 7)].expr(),
+                    );
+                }
+            });
+            cb.condition(
+                (q_in_round(q_enable, meta)
+                    - q_in_round(q_padding, meta)
+                    - q_in_round(q_first, meta))
+                    * meta.query_advice(is_final, Rotation::next()),
+                |cb| {
+                    let bytes_left = meta.query_advice(keccak_table.bytes_left, Rotation::cur());
+                    let bytes_left_next =
+                        meta.query_advice(keccak_table.bytes_left, Rotation::next());
+                    cb.require_equal(
+                        "bytes_left should stay same on non absorb round",
+                        bytes_left,
+                        bytes_left_next,
+                    );
+                },
+            );
+            cb.condition(
+                q(q_enable, meta) * meta.query_advice(is_final, Rotation::cur()),
+                |cb| {
+                    let bytes_left = meta.query_advice(keccak_table.bytes_left, Rotation::cur());
+                    cb.require_zero("bytes_left should be 0 when is_final", bytes_left);
+                },
+            );
+            cb.gate(1.expr())
+        });
 
         // Enforce logic for when this block is the last block for a hash
         let last_is_padding_in_block = is_paddings.last().unwrap().at_offset(
@@ -1583,7 +1819,7 @@ impl<F: Field> KeccakPackedConfig<F> {
             q_round_last,
             q_padding,
             q_padding_last,
-            is_final,
+            keccak_table,
             cell_manager,
             round_cst,
             normalize_3,
@@ -1604,42 +1840,72 @@ impl<F: Field> KeccakPackedConfig<F> {
         region: &mut Region<'_, F>,
         inputs: &[Vec<u8>],
         capacity: Option<usize>,
-    ) -> Vec<AssignedCell<F, F>> {
-        let (witness, fetch_cells) = multi_keccak(inputs, capacity);
-        self.assign(region, &witness, fetch_cells)
+    ) -> Vec<(
+        Vec<AssignedCell<F, F>>,
+        [AssignedCell<F, F>; NUM_WORDS_TO_SQUEEZE],
+    )> {
+        let (witness, io_trace) = multi_keccak(inputs, capacity);
+        let (mut inputs_assigned, outputs_assigned) = self.assign(region, &witness, io_trace);
+        let mut assigned_trace = Vec::with_capacity(inputs.len());
+        for (input, output) in inputs.iter().zip(
+            outputs_assigned
+                .into_iter()
+                .chunks(NUM_WORDS_TO_SQUEEZE)
+                .into_iter(),
+        ) {
+            let mut output_rev = output.into_iter().collect_vec();
+            output_rev.reverse();
+            assigned_trace.push((
+                inputs_assigned.drain(..input.len()).collect(),
+                output_rev.try_into().unwrap(),
+            ));
+        }
+        assigned_trace
     }
 
     pub(crate) fn assign(
         &self,
         region: &mut Region<'_, F>,
         witness: &[KeccakRow<F>],
-        mut fetch_cells: Vec<(usize, usize)>,
-    ) -> Vec<AssignedCell<F, F>> {
-        // TODO: I think the fetch_cells should already be in sorted-by-row order, but
-        // for safety let's sort again
-        fetch_cells.sort_unstable_by(|(_, a_row_offset), (_, b_row_offset)| {
-            a_row_offset.cmp(b_row_offset)
-        });
+        io_trace: KeccakMultiIOTrace,
+    ) -> (Vec<AssignedCell<F, F>>, Vec<AssignedCell<F, F>>) {
+        // inputs, outs in io_trace should already be in row sorted order
 
-        let fetch_len = fetch_cells.len();
-        let mut fetched_assigned = Vec::with_capacity(fetch_cells.len());
-        let mut fetch_cell = fetch_cells.into_iter().peekable();
+        let input_len = io_trace.inputs.len();
+        let output_len = io_trace.outputs.len();
+        let mut inputs = Vec::with_capacity(input_len);
+        let mut outputs = Vec::with_capacity(output_len);
+
+        let mut input_row = io_trace.inputs.into_iter().peekable();
+        let mut output_cell = io_trace.outputs.into_iter().peekable();
         for (offset, keccak_row) in witness.iter().enumerate() {
-            let row_assigned = self.set_row(region, offset, keccak_row);
+            let (input_byte, row_assigned) = self.set_row(region, offset, keccak_row);
             loop {
-                if let Some(&(column_id, row_id)) = fetch_cell.peek() {
+                if let Some(&row_id) = input_row.peek() {
                     debug_assert!(row_id >= offset);
                     if row_id == offset {
-                        fetched_assigned.push(row_assigned[column_id].clone());
-                        fetch_cell.next();
+                        inputs.push(input_byte.clone());
+                        input_row.next();
+                        continue;
+                    }
+                }
+                break;
+            }
+            loop {
+                if let Some(&(column_id, row_id)) = output_cell.peek() {
+                    debug_assert!(row_id >= offset);
+                    if row_id == offset {
+                        outputs.push(row_assigned[column_id].clone());
+                        output_cell.next();
                         continue;
                     }
                 }
                 break;
             }
         }
-        assert_eq!(fetch_len, fetched_assigned.len());
-        fetched_assigned
+        assert_eq!(inputs.len(), input_len);
+        assert_eq!(outputs.len(), output_len);
+        (inputs, outputs)
     }
 
     fn set_row(
@@ -1647,7 +1913,7 @@ impl<F: Field> KeccakPackedConfig<F> {
         region: &mut Region<'_, F>,
         offset: usize,
         row: &KeccakRow<F>,
-    ) -> Vec<AssignedCell<F, F>> {
+    ) -> (AssignedCell<F, F>, Vec<AssignedCell<F, F>>) {
         // Fixed selectors
         for (name, column, value) in &[
             ("q_enable", self.q_enable, F::from(row.q_enable)),
@@ -1672,14 +1938,16 @@ impl<F: Field> KeccakPackedConfig<F> {
                 .unwrap();
         }
 
-        region
-            .assign_advice(
-                || "is final",
-                self.is_final,
-                offset,
-                || Value::known(F::from(row.is_final)),
-            )
-            .unwrap();
+        let table_assigned = self.keccak_table.assign_row(
+            region,
+            offset,
+            [
+                F::from(row.is_final),
+                // F::from(row.length as u64),
+                row.value,
+                row.bytes_left,
+            ],
+        );
 
         // Cell values
         let row_assigned = row
@@ -1708,7 +1976,7 @@ impl<F: Field> KeccakPackedConfig<F> {
             )
             .unwrap();
 
-        row_assigned
+        (table_assigned.into_iter().nth(1).unwrap(), row_assigned)
     }
 
     pub(crate) fn load(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
@@ -1726,7 +1994,16 @@ impl<F: Field> KeccakPackedConfig<F> {
     }
 }
 
-fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, usize)> {
+struct KeccakIOTrace {
+    // the absolute row offsets of the input bytes to be assigned
+    input: Vec<usize>,
+    // the `Cell` coordinates (column_id, absolute row offset) of the output hash digest words to
+    // assign there are NUM_WORDS_TO_SQUEEZE words of these, each word is 64 bits, but
+    // represented in sparse form `sum_i b_i 8^i`
+    output: [(usize, usize); NUM_WORDS_TO_SQUEEZE],
+}
+
+fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> KeccakIOTrace {
     let mut bits = into_bits(bytes);
     let mut s = [[F::zero(); 5]; 5];
     let absorb_positions = get_absorb_positions();
@@ -1743,7 +2020,7 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
     // let mut hash_out: [u8; 32] = ethers_core::utils::keccak256(bytes);
     // hash_out.reverse();
     // let hash_id = rlc::value(&hash_out, r);
-    let mut length = 0usize;
+    // let mut length = 0usize;
     // let mut data_rlc = F::zero();
     let chunks = bits.chunks(RATE_IN_BITS);
     let num_chunks = chunks.len();
@@ -1752,14 +2029,16 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
     let mut cell_managers = Vec::with_capacity(NUM_ROUNDS + 1);
     let mut regions = Vec::with_capacity(NUM_ROUNDS + 1);
     // let mut hash_rlc = F::zero();
-    let mut round_lengths = Vec::with_capacity(NUM_ROUNDS + 1);
+    // let mut round_lengths = Vec::with_capacity(NUM_ROUNDS + 1);
     // let mut round_data_rlcs = Vec::new();
 
     // Cells of the final output hash digest as words
     // Return these so we can fetch the assigned cells after they are actually
     // assigned
     let mut hash_digest_cells = Vec::with_capacity(NUM_WORDS_TO_SQUEEZE);
-    let mut fetch_cells = vec![(0, 0); NUM_WORDS_TO_SQUEEZE];
+    let mut fetch_cells = [(0, 0); NUM_WORDS_TO_SQUEEZE];
+    // absolute row offsets of the input bytes, for later fetching
+    let mut input_byte_offsets = vec![usize::MAX; bytes.len()];
 
     for (idx, chunk) in chunks.enumerate() {
         let is_final_block = idx == num_chunks - 1;
@@ -1780,7 +2059,7 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
         // better memory management to clear already allocated Vecs
         cell_managers.clear();
         regions.clear();
-        round_lengths.clear();
+        // round_lengths.clear();
 
         for round in 0..NUM_ROUNDS + 1 {
             let mut cell_manager = CellManager::new(get_num_rows_per_round());
@@ -1857,10 +2136,11 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
                 // let mut paddings = Vec::new();
                 for (padding_idx, is_padding) in is_paddings.iter_mut().enumerate() {
                     let byte_idx = round * 8 + padding_idx;
+                    #[allow(clippy::needless_bool)]
                     let padding = if is_final_block && byte_idx >= num_bytes_in_last_block {
                         true
                     } else {
-                        length += 1;
+                        // length += 1;
                         false
                     };
                     // paddings.push(padding);
@@ -2045,7 +2325,7 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
                 .take(NUM_WORDS_TO_SQUEEZE)
                 .map(|a| a[0])
                 .collect();
-            round_lengths.push(length);
+            // round_lengths.push(length);
             // round_data_rlcs.push(data_rlc);
 
             cell_managers.push(cell_manager);
@@ -2088,7 +2368,6 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
                 fetch_cells[idx] = (hash_digest_cells[idx].0, absolute_row_offset as usize);
             }
             for row_idx in 0..get_num_rows_per_round() {
-                /*
                 let byte_idx = if round < NUM_WORDS_TO_ABSORB {
                     round * 8 + std::cmp::min(row_idx, 7)
                 } else {
@@ -2105,7 +2384,11 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
                 } else {
                     bytes.len() - byte_idx
                 };
-                */
+                // If this row is part of the input bytes, tag it so we can fetch input later
+                if byte_idx < bytes.len() {
+                    input_byte_offsets[byte_idx] =
+                        cmp::min(input_byte_offsets[byte_idx], rows.len());
+                }
                 rows.push(KeccakRow {
                     q_enable: row_idx == 0,
                     // q_enable_row: true,
@@ -2116,13 +2399,13 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
                     q_padding_last: row_idx == 0 && round == NUM_WORDS_TO_ABSORB - 1,
                     round_cst,
                     is_final: is_final_block && round == NUM_ROUNDS && row_idx == 0,
-                    length: round_lengths[round],
+                    // length: round_lengths[round],
                     cell_values: regions[round].rows[row_idx].clone(),
                     // data_rlc: round_data_rlcs[round],
                     // hash_rlc,
-                    // value: F::from_u128(byte as u128),
+                    value: F::from(byte as u64),
                     // from len to 1
-                    // bytes_left: F::from_u128(bytes_left as u128),
+                    bytes_left: F::from(bytes_left as u64),
                     // hash_id,
                 });
                 #[cfg(debug_assertions)]
@@ -2159,17 +2442,25 @@ fn keccak<F: Field>(rows: &mut Vec<KeccakRow<F>>, bytes: &[u8]) -> Vec<(usize, u
         debug!("hash: {:x?}", &(hash_bytes[0..4].concat()));
         // debug!("data rlc: {:x?}", data_rlc);
     }
-    assert_eq!(fetch_cells.len(), NUM_WORDS_TO_SQUEEZE);
-    fetch_cells
+    fetch_cells.reverse();
+    KeccakIOTrace {
+        input: input_byte_offsets,
+        output: fetch_cells,
+    }
 }
 
+/// Concatenation of `KeccakIOTrace`s
+pub(crate) struct KeccakMultiIOTrace {
+    inputs: Vec<usize>,
+    outputs: Vec<(usize, usize)>,
+}
 /// Returns vector of KeccakRow and vector of the cell coordinates of hash
 /// digest outputs. The latter stores each hash digest as a chunk of 4 cells, so
 /// the vector has length `bytes.len() * 4`.
 fn multi_keccak<F: Field>(
     bytes: &[Vec<u8>],
     capacity: Option<usize>,
-) -> (Vec<KeccakRow<F>>, Vec<(usize, usize)>) {
+) -> (Vec<KeccakRow<F>>, KeccakMultiIOTrace) {
     let mut rows: Vec<KeccakRow<F>> = Vec::with_capacity(
         (1 + capacity.unwrap_or(0) * (NUM_ROUNDS + 1)) * get_num_rows_per_round(),
     );
@@ -2186,20 +2477,23 @@ fn multi_keccak<F: Field>(
             q_padding_last: false,
             round_cst: F::zero(),
             is_final: false,
-            length: 0usize,
+            // length: 0usize,
             cell_values: Vec::new(),
             // data_rlc: F::zero(),
             // hash_rlc: F::zero(),
             // hash_id: F::zero(),
-            // value: F::zero(),
-            // bytes_left: F::zero(),
+            value: F::zero(),
+            bytes_left: F::zero(),
         });
     }
     // Actual keccaks
-    let fetch_cells = bytes
-        .iter()
-        .flat_map(|bytes| keccak(&mut rows, bytes))
-        .collect();
+    let mut inputs = Vec::with_capacity(bytes.iter().map(|bytes| bytes.len()).sum());
+    let mut outputs = Vec::with_capacity(bytes.len() * NUM_WORDS_TO_SQUEEZE);
+    for bytes in bytes.iter() {
+        let KeccakIOTrace { mut input, output } = keccak(&mut rows, bytes);
+        inputs.append(&mut input);
+        outputs.extend_from_slice(&output);
+    }
 
     if let Some(capacity) = capacity {
         // Pad with no data hashes to the expected capacity
@@ -2211,7 +2505,7 @@ fn multi_keccak<F: Field>(
             panic!("{:?}", Error::BoundsFailure);
         }
     }
-    (rows, fetch_cells)
+    (rows, KeccakMultiIOTrace { inputs, outputs })
 }
 
 #[cfg(test)]
@@ -2219,9 +2513,9 @@ mod tests {
     use super::*;
     use halo2_proofs::{dev::MockProver, halo2curves::bn256::Fr};
 
-    fn verify<F: Field>(k: u32, inputs: Vec<Vec<u8>>, success: bool) {
+    fn verify<F: Field>(k: u32, inputs: Vec<Vec<u8>>, _success: bool) {
         let mut circuit = KeccakPackedCircuit::new(2usize.pow(k) - 64);
-        circuit.generate_witness(&inputs);
+        circuit.inputs = inputs;
 
         let prover = MockProver::<F>::run(k, &circuit, vec![]).unwrap();
         prover.assert_satisfied();
