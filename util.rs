@@ -13,18 +13,18 @@ pub mod expression;
 
 use eth_types::{Field, ToScalar, Word};
 
-pub(crate) const NUM_BITS_PER_BYTE: usize = 8;
-pub(crate) const NUM_BYTES_PER_WORD: usize = 8;
-pub(crate) const NUM_BITS_PER_WORD: usize = NUM_BYTES_PER_WORD * NUM_BITS_PER_BYTE;
-pub(crate) const KECCAK_WIDTH: usize = 5 * 5;
-pub(crate) const KECCAK_WIDTH_IN_BITS: usize = KECCAK_WIDTH * NUM_BITS_PER_WORD;
-pub(crate) const NUM_ROUNDS: usize = 24;
-pub(crate) const NUM_WORDS_TO_ABSORB: usize = 17;
-pub(crate) const NUM_WORDS_TO_SQUEEZE: usize = 4;
-pub(crate) const ABSORB_WIDTH_PER_ROW: usize = NUM_BITS_PER_WORD;
-pub(crate) const ABSORB_WIDTH_PER_ROW_BYTES: usize = ABSORB_WIDTH_PER_ROW / NUM_BITS_PER_BYTE;
-pub(crate) const RATE: usize = NUM_WORDS_TO_ABSORB * NUM_BYTES_PER_WORD;
-pub(crate) const RATE_IN_BITS: usize = RATE * NUM_BITS_PER_BYTE;
+pub const NUM_BITS_PER_BYTE: usize = 8;
+pub const NUM_BYTES_PER_WORD: usize = 8;
+pub const NUM_BITS_PER_WORD: usize = NUM_BYTES_PER_WORD * NUM_BITS_PER_BYTE;
+pub const KECCAK_WIDTH: usize = 5 * 5;
+pub const KECCAK_WIDTH_IN_BITS: usize = KECCAK_WIDTH * NUM_BITS_PER_WORD;
+pub const NUM_ROUNDS: usize = 24;
+pub const NUM_WORDS_TO_ABSORB: usize = 17;
+pub const NUM_WORDS_TO_SQUEEZE: usize = 4;
+pub const ABSORB_WIDTH_PER_ROW: usize = NUM_BITS_PER_WORD;
+pub const ABSORB_WIDTH_PER_ROW_BYTES: usize = ABSORB_WIDTH_PER_ROW / NUM_BITS_PER_BYTE;
+pub const RATE: usize = NUM_WORDS_TO_ABSORB * NUM_BYTES_PER_WORD;
+pub const RATE_IN_BITS: usize = RATE * NUM_BITS_PER_BYTE;
 pub(crate) const THETA_C_WIDTH: usize = 5 * NUM_BITS_PER_WORD;
 pub(crate) const RHO_MATRIX: [[usize; 5]; 5] = [
     [0, 36, 3, 41, 18],
@@ -64,9 +64,9 @@ pub(crate) const ROUND_CST: [u64; NUM_ROUNDS + 1] = [
 pub(crate) const ROUND_CST_BIT_POS: [usize; 7] = [0, 1, 3, 7, 15, 31, 63];
 
 // The number of bits used in the sparse word representation per bit
-pub(crate) const BIT_COUNT: usize = 3;
+pub const BIT_COUNT: usize = 3;
 // The base of the bit in the sparse word representation
-pub(crate) const BIT_SIZE: usize = 2usize.pow(BIT_COUNT as u32);
+pub const BIT_SIZE: usize = 2usize.pow(BIT_COUNT as u32);
 
 // `a ^ ((~b) & c)` is calculated by doing `lookup[3 - 2*a + b - c]`
 pub(crate) const CHI_BASE_LOOKUP_TABLE: [u8; 5] = [0, 1, 1, 0, 0];
