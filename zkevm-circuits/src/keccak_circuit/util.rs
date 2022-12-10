@@ -334,7 +334,7 @@ impl WordParts {
 /// Get the degree of the circuit from the KECCAK_DEGREE env variable
 pub fn get_degree() -> usize {
     var("KECCAK_DEGREE")
-        .unwrap_or_else(|_| "8".to_string())
+        .expect("Need to set KECCAK_DEGREE to log_2(rows) of circuit")
         .parse()
         .expect("Cannot parse KECCAK_DEGREE env var as usize")
 }
