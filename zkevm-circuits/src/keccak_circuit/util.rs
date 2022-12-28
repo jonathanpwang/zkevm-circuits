@@ -2,6 +2,7 @@
 
 use halo2_proofs::{
     circuit::{Layouter, Value},
+    halo2curves::FieldExt,
     plonk::{Error, TableColumn},
 };
 use itertools::Itertools;
@@ -140,24 +141,6 @@ pub fn rotate_left(bits: &[u8], count: usize) -> [u8; NUM_BITS_PER_WORD] {
     let mut rotated = bits.to_vec();
     rotated.rotate_left(count);
     rotated.try_into().unwrap()
-}
-
-/// Encodes the data using rlc
-pub mod compose_rlc {
-    use halo2_proofs::{halo2curves::FieldExt, plonk::Expression};
-
-    pub(crate) fn expr<F: FieldExt>(
-        expressions: &[Expression<F>],
-        r: Expression<F>,
-    ) -> Expression<F> {
-        let mut rlc = expressions[0].clone();
-        let mut multiplier = r.clone();
-        for expression in expressions[1..].iter() {
-            rlc = rlc + expression.clone() * multiplier.clone();
-            multiplier = multiplier * r.clone();
-        }
-        rlc
-    }
 }
 
 /// Scatters a value into a packed word constant
@@ -456,4 +439,13 @@ pub fn load_lookup_table<F: Field>(
             Ok(())
         },
     )
+}
+
+pub(crate) fn extract_field<F: FieldExt>(value: Value<F>) -> F {
+    let mut field = F::zero();
+    let _ = value.map(|f| {
+        field = f;
+        f
+    });
+    field
 }

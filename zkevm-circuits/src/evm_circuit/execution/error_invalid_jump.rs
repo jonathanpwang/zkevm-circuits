@@ -119,7 +119,15 @@ impl<F: Field> ExecutionGadget<F> for ErrorInvalidJumpGadget<F> {
         // When it's an internal call, need to restore caller's state as finishing this
         // call. Restore caller state to next StepState
         let restore_context = cb.condition(1.expr() - cb.curr.state.is_root.expr(), |cb| {
-            RestoreContextGadget::construct(cb, 0.expr(), 0.expr(), 0.expr(), 0.expr(), 0.expr())
+            RestoreContextGadget::construct(
+                cb,
+                0.expr(),
+                0.expr(),
+                0.expr(),
+                0.expr(),
+                0.expr(),
+                0.expr(),
+            )
         });
 
         Self {
@@ -216,7 +224,7 @@ impl<F: Field> ExecutionGadget<F> for ErrorInvalidJumpGadget<F> {
             .assign(region, offset, condition_rlc)?;
 
         self.restore_context
-            .assign(region, offset, block, call, step, 2)?;
+            .assign(region, offset, block, call, step, 2 + is_jumpi as usize)?;
         Ok(())
     }
 }
@@ -266,7 +274,15 @@ mod test {
         test_invalid_jump(40, true);
     }
 
-    // TODO: add internal call test
+    #[test]
+    fn invalid_jump_internal() {
+        // test jump error in internal call
+        test_internal_jump_error(false);
+        // test jumpi error in internal call
+        test_internal_jump_error(true);
+    }
+
+    // internal call test
     struct Stack {
         gas: u64,
         value: Word,
@@ -335,9 +351,8 @@ mod test {
         }
     }
 
-    // jump error happen in internal call
-    #[test]
-    fn test_internal_jump_error() {
+    // jump or jumpi error happen in internal call
+    fn test_internal_jump_error(is_jumpi: bool) {
         let mut caller_bytecode = bytecode! {
             PUSH1(0)
             PUSH1(0)
@@ -353,9 +368,16 @@ mod test {
             STOP
         });
 
+        let opcode = if is_jumpi {
+            OpcodeId::JUMPI
+        } else {
+            OpcodeId::JUMP
+        };
+
         let mut callee_bytecode = bytecode! {
-            PUSH1(42) // jump dest 43
-            JUMP
+            PUSH1(1) //  work as condition if is_jumpi
+            PUSH1(42) // jump dest 45
+            .write_op(opcode)
 
             PUSH1(0)
             PUSH1(0)
@@ -426,7 +448,7 @@ mod test {
         builder
             .handle_block(&block_data.eth_block, &block_data.geth_traces)
             .unwrap();
-        let block = block_convert(&builder.block, &builder.code_db);
+        let block = block_convert(&builder.block, &builder.code_db).unwrap();
         assert_eq!(run_test_circuit(block), Ok(()));
     }
 
@@ -456,7 +478,7 @@ mod test {
     }
 
     #[test]
-    fn invalid_jumpi_err() {
+    fn invalid_jumpi_err_root() {
         test_invalid_jumpi(34);
     }
 }
