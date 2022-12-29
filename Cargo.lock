@@ -2290,6 +2290,7 @@ dependencies = [
  "num-bigint",
  "pretty_assertions",
  "rand",
+ "rand_core",
  "rand_xorshift",
 ]
 
