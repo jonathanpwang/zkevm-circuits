@@ -1,12 +1,10 @@
-use crate::keccak_circuit::util::{expression::sum, to_bytes, NUM_BYTES_PER_WORD};
-
 use super::util::{
     constraint_builder::BaseConstraintBuilder,
     eth_types::Field,
     expression::{and, not, select, Expr},
     field_xor, get_absorb_positions, get_num_bits_per_lookup, into_bits, load_lookup_table,
     load_normalize_table, load_pack_table, pack, pack_u64, pack_with_base, rotate, scatter,
-    target_part_sizes, unpack, BIT_SIZE, CHI_BASE_LOOKUP_TABLE, NUM_BYTES_TO_ABSORB, NUM_ROUNDS,
+    target_part_sizes, to_bytes, unpack, CHI_BASE_LOOKUP_TABLE, NUM_BYTES_PER_WORD, NUM_ROUNDS,
     NUM_WORDS_TO_ABSORB, NUM_WORDS_TO_SQUEEZE, RATE, RATE_IN_BITS, RHO_MATRIX, ROUND_CST,
 };
 use halo2_proofs::{
@@ -489,7 +487,7 @@ impl<F: Field> KeccakCircuit<F> {
 /// Recombines parts back together
 mod decode {
     use super::{Expr, FieldExt, Part, PartValue};
-    use crate::keccak_circuit::util::BIT_SIZE;
+    use crate::util::BIT_SIZE;
     use halo2_proofs::plonk::Expression;
 
     pub(crate) fn expr<F: FieldExt>(parts: Vec<Part<F>>) -> Expression<F> {
@@ -511,7 +509,7 @@ mod split {
         decode, BaseConstraintBuilder, CellManager, Expr, Field, FieldExt, KeccakRegion, Part,
         PartValue,
     };
-    use crate::keccak_circuit::util::{pack, pack_part, unpack, WordParts};
+    use crate::util::{pack, pack_part, unpack, WordParts};
     use halo2_proofs::plonk::{ConstraintSystem, Expression};
 
     #[allow(clippy::too_many_arguments)]
@@ -583,9 +581,8 @@ mod split_uniform {
         decode, target_part_sizes, BaseConstraintBuilder, Cell, CellManager, Expr, FieldExt,
         KeccakRegion, Part, PartValue,
     };
-    use crate::keccak_circuit::keccak_packed_multi::BIT_SIZE;
-    use crate::keccak_circuit::util::{
-        eth_types::Field, pack, pack_part, rotate, rotate_rev, unpack, WordParts,
+    use crate::util::{
+        eth_types::Field, pack, pack_part, rotate, rotate_rev, unpack, WordParts, BIT_SIZE,
     };
     use halo2_proofs::plonk::{ConstraintSystem, Expression};
 
@@ -811,7 +808,7 @@ mod transform {
 // Transfroms values to cells
 mod transform_to {
     use super::{Cell, Expr, Field, FieldExt, KeccakRegion, Part, PartValue};
-    use crate::keccak_circuit::util::{pack, to_bytes, unpack};
+    use crate::util::{pack, to_bytes, unpack};
     use halo2_proofs::plonk::ConstraintSystem;
     use halo2_proofs::plonk::TableColumn;
 
